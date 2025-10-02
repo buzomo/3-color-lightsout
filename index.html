@@ -108,7 +108,7 @@
 
             // Append the move to the history textarea
             const historyTextarea = document.getElementById('history-textarea');
-            historyTextarea.value += `Move ${moves}: Pressed ${index}\n`;
+            historyTextarea.value += `Move ${moves}: Pressed ${index + 1}\n`;
             historyTextarea.value += formatGrid(buttons) + '\n\n';
         }
         function formatGrid(buttons) {
@@ -393,7 +393,7 @@
 
                     // Append the move to the history textarea
                     const historyTextarea = document.getElementById('history-textarea');
-                    historyTextarea.value += `Move ${moves}: Pressed ${index}\n`;
+                    historyTextarea.value += `Move ${moves}: Pressed ${index + 1}\n`;
                     historyTextarea.value += formatGrid(buttons) + '\n\n';
 
                     await new Promise(res => setTimeout(res, delay));
