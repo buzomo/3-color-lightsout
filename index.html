@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3色版Lights Out — 改良版ソルバー</title>
+    <style>
+        body {
+            font-family: 'Arial', sans-serif;
+            background-color: #1a1a1a;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+        }
+        h1 { color: white; margin-bottom: 10px; }
+        .description { color: white; text-align: center; margin-bottom: 20px; max-width: 80%; }
+        #game-board { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; width: 300px; height: 300px; margin-bottom: 20px; }
+        .button {
+            width: 90px; height: 90px; background-color: #00ffcc; border-radius: 10px;
+            display: flex; justify-content: center; align-items: center; cursor: pointer; transition: all 0.1s;
+            color: #111; font-size: 24px; user-select: none; box-shadow: 0 0 10px rgba(0, 255, 204, 0.5);
+        }
+        .button:hover { background-color: #00ccff; }
+        .button.highlight { border: 3px solid white; box-shadow: 0 0 15px rgba(255,255,255,0.8); }
+        #moves { font-size: 20px; margin-bottom: 10px; color: white; }
+        #slider-container { width: 300px; margin-top: 20px; }
+        #slider { width: 100%; }
+        #message { color: white; font-size: 20px; margin-top: 10px; height: 24px; }
+        #new-button { padding: 10px 20px; background-color: #00ffcc; color: #111; border: none; border-radius: 5px; font-size: 16px; cursor: pointer; margin: 5px; display:none; }
+        #solve-button { padding: 8px 16px; margin-left:8px; background:#ffaa00; border:none; border-radius:5px; cursor:pointer; display: none; }
+        #history-textarea {
+            width: 300px;
+            height: 200px;
+            margin-top: 20px;
+            font-family: monospace;
+            background-color: #333;
+            color: white;
+            border: none;
+            resize: none;
+        }
+    </style>
+</head>
+<body>
+    <h1>3色版Lights Out（改良ソルバー付き）</h1>
+    <div class="description">
+        このパズルは3x3のグリッドで構成されています。各ボタンを押すと、そのボタンと隣接するボタン（斜めを除く）の色が1つ進みます。<br>
+        色の順番は「青 → 紫 → 黄 → 青」です。目標はすべてのボタンを同じ色にすることです。自動で最小手順を算出して解きます。
+    </div>
+    <div id="moves">手数: 0</div>
+    <div id="game-board"></div>
+    <div style="margin-bottom:8px;">
+        <button id="solve-button" onclick="manualSolve()">今すぐ解く</button>
+        <button id="new-button" onclick="startGame()">別のパズル</button>
+    </div>
+    <div id="slider-container">
+        <input type="range" id="slider" min="0" max="100" value="0">
+    </div>
+    <div id="message"></div>
+    <textarea id="history-textarea" readonly></textarea>
+    <script>
+        let moves = 0;
+        let buttons = [];
+        const colorCodes = ['#00ffcc', '#ff00cc', '#ffcc00'];
+        const colorLetters = {
+            '#00ffcc': 'G', // Green
+            '#ff00cc': 'P', // Purple
+            '#ffcc00': 'Y'  // Yellow
+        };
+        let autoPlaying = true;
+        let gameHistory = [];
+        let moveLimit = 100;
+        let sliderTimeout;
+        let lastPressedButton = null;
+        // ---------- 基本操作（既存） ----------
+        function pressButton(button, isAuto = false) {
+            // Check if the puzzle is already cleared
+            const firstColor = buttons[0].dataset.color;
+            const allSame = buttons.every(b => b.dataset.color === firstColor);
+            if (allSame) {
+                return;
+            }
+            if (!autoPlaying && !isAuto) return;
+            if (lastPressedButton) lastPressedButton.classList.remove('highlight');
+            button.classList.add('highlight');
+            lastPressedButton = button;
+            const index = buttons.indexOf(button);
+            const row = Math.floor(index / 3);
+            const col = index % 3;
+            for (let r = Math.max(0, row - 1); r <= Math.min(2, row + 1); r++) {
+                for (let c = Math.max(0, col - 1); c <= Math.min(2, col + 1); c++) {
+                    // Skip diagonals: if both row and column are different from the button's row and column
+                    if (r !== row && c !== col) continue;
+                    const neighborIndex = r * 3 + c;
+                    const neighbor = buttons[neighborIndex];
+                    const currentColorIndex = colorCodes.indexOf(neighbor.dataset.color);
+                    const nextColorIndex = (currentColorIndex + 1) % colorCodes.length;
+                    neighbor.dataset.color = colorCodes[nextColorIndex];
+                    neighbor.style.backgroundColor = neighbor.dataset.color;
+                }
+            }
+            moves++;
+            document.getElementById('moves').textContent = `手数: ${moves}`;
+            saveState();
+            checkWin();
+
+            // Append the move to the history textarea
+            const historyTextarea = document.getElementById('history-textarea');
+            historyTextarea.value += `Move ${moves}: Pressed ${index}\n`;
+            historyTextarea.value += formatGrid(buttons) + '\n\n';
+        }
+        function formatGrid(buttons) {
+            let grid = '';
+            for (let i = 0; i < 9; i++) {
+                if (i > 0 && i % 3 === 0) grid += '\n';
+                grid += colorLetters[buttons[i].dataset.color];
+            }
+            return grid;
+        }
+        function saveState() {
+            const state = buttons.map(button => button.dataset.color);
+            gameHistory.push([...state]);
+            const slider = document.getElementById('slider');
+            slider.max = Math.max(0, gameHistory.length - 1); // Start from 0 (initial state)
+            slider.value = moves;
+            resetSliderTimeout();
+        }
+        function resetSliderTimeout() {
+            clearTimeout(sliderTimeout);
+            sliderTimeout = setTimeout(() => {
+                const slider = document.getElementById('slider');
+                slider.value = moves;
+                updateGameState(moves);
+            }, 7000);
+        }
+        function updateGameState(index) {
+            if (index < 0 || index >= gameHistory.length) return;
+            const state = gameHistory[index];
+            buttons.forEach((button, i) => {
+                button.dataset.color = state[i];
+                button.style.backgroundColor = state[i];
+                button.classList.remove('highlight');
+            });
+            if (index > 0) {
+                const previousState = gameHistory[index - 1];
+                for (let i = 0; i < buttons.length; i++) {
+                    if (buttons[i].dataset.color !== previousState[i]) {
+                        buttons[i].classList.add('highlight');
+                        lastPressedButton = buttons[i];
+                        break;
+                    }
+                }
+            }
+            moves = index;
+            document.getElementById('moves').textContent = `手数: ${moves}`;
+        }
+        function startGame() {
+            moves = 0;
+            document.getElementById('moves').textContent = `手数: ${moves}`;
+            const gameBoard = document.getElementById('game-board');
+            gameBoard.innerHTML = '';
+            buttons = [];
+            gameHistory = [];
+            document.getElementById('slider').value = 0;
+            document.getElementById('message').textContent = '';
+            document.getElementById('new-button').style.display = 'none';
+            lastPressedButton = null;
+            // Clear the history textarea
+            document.getElementById('history-textarea').value = '';
+            for (let i = 0; i < 9; i++) {
+                const button = document.createElement('div');
+                button.className = 'button';
+                button.dataset.color = colorCodes[Math.floor(Math.random() * colorCodes.length)];
+                button.style.backgroundColor = button.dataset.color;
+                button.addEventListener('click', () => pressButton(button));
+                gameBoard.appendChild(button);
+                buttons.push(button);
+            }
+            // Save initial state
+            gameHistory.push(buttons.map(button => button.dataset.color));
+            const historyTextarea = document.getElementById('history-textarea');
+            historyTextarea.value += 'Initial State:\n';
+            historyTextarea.value += formatGrid(buttons) + '\n\n';
+            autoPlaying = true;
+
+            // Show countdown from 5 to 1
+            let countdown = 5;
+            document.getElementById('message').textContent = `開始まで: ${countdown}秒`;
+            const countdownInterval = setInterval(() => {
+                countdown--;
+                if (countdown > 0) {
+                    document.getElementById('message').textContent = `開始まで: ${countdown}秒`;
+                } else {
+                    clearInterval(countdownInterval);
+                    document.getElementById('message').textContent = 'ソルバー実行中...';
+                    autoSolveAndApply();
+                }
+            }, 1000);
+        }
+        // ---------- 改良ソルバー（線形代数 mod3） ----------
+        function colorIndexByButtonArray(arr) {
+            return arr.map(c => colorCodes.indexOf(c));
+        }
+        // 9x9 の影響行列を作成（押すと自分と周囲のセル（斜め含まない）が +1）
+        function buildInfluenceMatrix() {
+            const A = Array.from({length:9}, () => Array(9).fill(0));
+            for (let press = 0; press < 9; press++) {
+                const pr = Math.floor(press / 3);
+                const pc = press % 3;
+                // Include only orthogonally adjacent cells and the cell itself
+                for (let r = Math.max(0, pr - 1); r <= Math.min(2, pr + 1); r++) {
+                    for (let c = Math.max(0, pc - 1); c <= Math.min(2, pc + 1); c++) {
+                        if (r !== pr && c !== pc) continue; // Skip diagonals
+                        const affected = r * 3 + c;
+                        A[affected][press] = 1; // +1 mod 3
+                    }
+                }
+            }
+            return A;
+        }
+        // Gauss-Jordan mod 3, augmented matrix (n rows, n+1 cols)
+        function gaussJordanMod3(aug) {
+            const n = aug.length;
+            const m = aug[0].length; // n+1
+            let row = 0;
+            const pivotColOfRow = Array(n).fill(-1);
+            for (let col = 0; col < n && row < n; col++) {
+                // find pivot
+                let sel = -1;
+                for (let r = row; r < n; r++) {
+                    if ((aug[r][col] % 3 + 3) % 3 !== 0) { sel = r; break; }
+                }
+                if (sel === -1) continue;
+                // swap
+                [aug[row], aug[sel]] = [aug[sel], aug[row]];
+                // normalize pivot to 1
+                const v = ((aug[row][col] % 3) + 3) % 3;
+                // inverse mod 3: inv(1)=1, inv(2)=2
+                const inv = (v === 1) ? 1 : 2;
+                for (let c = col; c < m; c++) {
+                    aug[row][c] = ((aug[row][c] * inv) % 3 + 3) % 3;
+                }
+                // eliminate others
+                for (let r = 0; r < n; r++) {
+                    if (r === row) continue;
+                    const factor = ((aug[r][col] % 3) + 3) % 3;
+                    if (factor !== 0) {
+                        for (let c = col; c < m; c++) {
+                            aug[r][c] = ((aug[r][c] - factor * aug[row][c]) % 3 + 3) % 3;
+                        }
+                    }
+                }
+                pivotColOfRow[row] = col;
+                row++;
+            }
+            // check inconsistency
+            for (let r = 0; r < n; r++) {
+                let allZero = true;
+                for (let c = 0; c < n; c++) {
+                    if (aug[r][c] % 3 !== 0) { allZero = false; break; }
+                }
+                const rhs = ((aug[r][n] % 3) + 3) % 3;
+                if (allZero && rhs !== 0) return null; // no solution
+            }
+            // build solution (set free vars to 0)
+            const sol = Array(n).fill(0);
+            for (let r = 0; r < n; r++) {
+                const pc = pivotColOfRow[r];
+                if (pc !== -1) {
+                    sol[pc] = ((aug[r][n] % 3) + 3) % 3;
+                }
+            }
+            return sol;
+        }
+        // 導出：A と現在色から、各目標色（0/1/2）の解を試し最小和を採用
+        function solveLinearSystemForBestTarget() {
+            const A = buildInfluenceMatrix();
+            const cur = colorIndexByButtonArray(buttons.map(b => b.dataset.color));
+            let best = null; // {sol, target, sum}
+            for (let target = 0; target < 3; target++) {
+                // b = target - cur (mod3)
+                const b = cur.map(v => ((target - v) % 3 + 3) % 3);
+                // make augmented matrix
+                const aug = A.map((row, i) => row.concat([b[i]]).map(x => ((x%3)+3)%3));
+                const sol = gaussJordanMod3(aug.map(r => r.slice()));
+                if (sol) {
+                    const sum = sol.reduce((s, x) => s + x, 0);
+                    if (!best || sum < best.sum) best = { sol, target, sum };
+                }
+            }
+            return best; // null if no solution
+        }
+        // BFS フォールバック：状態空間 3^9 を探索して最短単押下数の解を見つける
+        function bfsFindSolution() {
+            const start = buttons.map(b => colorCodes.indexOf(b.dataset.color));
+            const encode = (arr) => arr.reduce((s, v) => s * 3 + v, 0);
+            const decode = (code) => {
+                const a = Array(9).fill(0);
+                for (let i = 8; i >= 0; i--) { a[i] = code % 3; code = Math.floor(code / 3); }
+                return a;
+            };
+            const startCode = encode(start);
+            const visited = new Uint8Array(Math.pow(3,9)); // 19683 < 65536 OK
+            const parent = new Int32Array(visited.length).fill(-1);
+            const parentMove = new Int16Array(visited.length).fill(-1);
+            const q = [];
+            visited[startCode] = 1;
+            q.push(startCode);
+            let qIdx = 0;
+            while (qIdx < q.length) {
+                const code = q[qIdx++];
+                const arr = decode(code);
+                // check all-same?
+                const allSame = arr.every(x => x === arr[0]);
+                if (allSame) {
+                    // build moves by backtracking
+                    let seq = [];
+                    let cur = code;
+                    while (parent[cur] !== -1) {
+                        seq.push(parentMove[cur]); // which button pressed to reach cur
+                        cur = parent[cur];
+                    }
+                    seq.reverse(); // sequence of button indices pressed
+                    // compress to counts 0..2
+                    const counts = Array(9).fill(0);
+                    for (const mv of seq) counts[mv] = (counts[mv] + 1) % 3;
+                    return counts;
+                }
+                // expand: try pressing each of 9 buttons once
+                for (let press = 0; press < 9; press++) {
+                    const newArr = arr.slice();
+                    const pr = Math.floor(press / 3), pc = press % 3;
+                    for (let r = Math.max(0, pr - 1); r <= Math.min(2, pr + 1); r++) {
+                        for (let c = Math.max(0, pc - 1); c <= Math.min(2, pc + 1); c++) {
+                            if (r !== pr && c !== pc) continue; // Skip diagonals
+                            const idx = r * 3 + c;
+                            newArr[idx] = (newArr[idx] + 1) % 3;
+                        }
+                    }
+                    const newCode = encode(newArr);
+                    if (!visited[newCode]) {
+                        visited[newCode] = 1;
+                        parent[newCode] = code;
+                        parentMove[newCode] = press;
+                        q.push(newCode);
+                    }
+                }
+            }
+            return null;
+        }
+        // 生成された解（counts: 各ボタンを何回押すか）を順に適用（アニメーション）
+        async function applySolutionAnimated(counts, delay = 500) {
+            if (!counts) return;
+            autoPlaying = true;
+            document.getElementById('message').textContent = `解適用中（総押下回数: ${counts.reduce((a,b)=>a+b,0)}）...`;
+            for (let i = 0; i < 9; i++) {
+                const k = counts[i];
+                for (let t = 0; t < k; t++) {
+                    // Check if the puzzle is already cleared before the move
+                    const firstColorBefore = buttons[0].dataset.color;
+                    const allSameBefore = buttons.every(button => button.dataset.color === firstColorBefore);
+                    if (allSameBefore) {
+                        document.getElementById('message').textContent = 'クリア！';
+                        document.getElementById('new-button').style.display = 'inline-block';
+                        return; // Exit the function if the puzzle is cleared
+                    }
+                    // Highlight the button being pressed
+                    if (lastPressedButton) lastPressedButton.classList.remove('highlight');
+                    buttons[i].classList.add('highlight');
+                    lastPressedButton = buttons[i];
+                    // Press the button (without highlighting, since we're handling that here)
+                    const index = i;
+                    const row = Math.floor(index / 3);
+                    const col = index % 3;
+                    for (let r = Math.max(0, row - 1); r <= Math.min(2, row + 1); r++) {
+                        for (let c = Math.max(0, col - 1); c <= Math.min(2, col + 1); c++) {
+                            // Skip diagonals: if both row and column are different from the button's row and column
+                            if (r !== row && c !== col) continue;
+                            const neighborIndex = r * 3 + c;
+                            const neighbor = buttons[neighborIndex];
+                            const currentColorIndex = colorCodes.indexOf(neighbor.dataset.color);
+                            const nextColorIndex = (currentColorIndex + 1) % colorCodes.length;
+                            neighbor.dataset.color = colorCodes[nextColorIndex];
+                            neighbor.style.backgroundColor = neighbor.dataset.color;
+                        }
+                    }
+                    moves++;
+                    document.getElementById('moves').textContent = `手数: ${moves}`;
+                    saveState();
+                    checkWin();
+
+                    // Append the move to the history textarea
+                    const historyTextarea = document.getElementById('history-textarea');
+                    historyTextarea.value += `Move ${moves}: Pressed ${index}\n`;
+                    historyTextarea.value += formatGrid(buttons) + '\n\n';
+
+                    await new Promise(res => setTimeout(res, delay));
+                    // Check if the puzzle is cleared after the move
+                    const firstColorAfter = buttons[0].dataset.color;
+                    const allSameAfter = buttons.every(button => button.dataset.color === firstColorAfter);
+                    if (allSameAfter) {
+                        document.getElementById('message').textContent = 'クリア！';
+                        document.getElementById('new-button').style.display = 'inline-block';
+                        return; // Exit the function if the puzzle is cleared
+                    }
+                }
+            }
+            // 最後にチェック
+            checkWin();
+        }
+        // メイン：まず線形ソルバーを試し、ダメならBFSを試す。見つかったら apply
+        async function autoSolveAndApply() {
+            // Check if the puzzle is already cleared
+            const firstColor = buttons[0].dataset.color;
+            const allSame = buttons.every(button => button.dataset.color === firstColor);
+            if (allSame) {
+                document.getElementById('message').textContent = 'クリア！';
+                document.getElementById('new-button').style.display = 'inline-block';
+                return;
+            }
+            document.getElementById('message').textContent = 'ソルバー実行中...';
+            const linear = solveLinearSystemForBestTarget();
+            if (linear && linear.sol) {
+                // linear.sol は各インデックスで 0/1/2 回押す
+                await applySolutionAnimated(linear.sol);
+                document.getElementById('message').textContent = '線形ソルバーで解きました。';
+                document.getElementById('new-button').style.display = 'inline-block';
+                return;
+            }
+            // フォールバック
+            const bfsSol = bfsFindSolution();
+            if (bfsSol) {
+                await applySolutionAnimated(bfsSol);
+                document.getElementById('message').textContent = 'BFSで最短解を見つけました。';
+                document.getElementById('new-button').style.display = 'inline-block';
+                return;
+            }
+            document.getElementById('message').textContent = '解が見つかりませんでした...';
+            document.getElementById('new-button').style.display = 'inline-block';
+        }
+        // 「今すぐ解く」ボタン用（手動トリガ）
+        function manualSolve() {
+            autoSolveAndApply();
+        }
+        function checkWin() {
+            const firstColor = buttons[0].dataset.color;
+            const allSame = buttons.every(button => button.dataset.color === firstColor);
+            if (allSame) {
+                autoPlaying = false;
+                document.getElementById('message').textContent = 'クリア！';
+                document.getElementById('new-button').style.display = 'inline-block';
+            }
+        }
+        document.getElementById('slider').addEventListener('input', function() {
+            const index = this.value;
+            updateGameState(index);
+            resetSliderTimeout();
+        });
+        window.onload = startGame;
+    </script>
+</body>
+</html>
